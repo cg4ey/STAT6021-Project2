@@ -1,0 +1,363 @@
+---
+title: "STAT6021 Project 2"
+author: "Dominic Scerbo (ybt7qt)"
+date: "4/23/2022"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(warning = FALSE, message = FALSE, echo = TRUE)
+```
+
+## Libraries
+
+```{r, echo=FALSE}
+library(tidyverse)
+library(gridExtra)
+library(ROCR)
+library(leaps)
+set.seed(1)
+```
+
+## Pre-Processing
+
+Objectives
+
+-   Read data
+
+-   Convert types as needed
+
+-   Apply transformations
+
+-   Remove unnecessary variables
+
+-   Split data into train and test dataset
+
+```{r}
+df <- read.csv('.//data//kc_house_data.csv', header = T)
+```
+
+```{r}
+# categorical columns
+#columns<-c("waterfront","view","condition","grade") 
+#df[columns]<-lapply(df[columns],factor)
+# columns of interest
+df <- select(df, -c(1,2,17,18,19))
+df <- drop_na(df)
+```
+
+The required transformation are:
+
+-   Waterfront is a categorical variable 1 is waterfront 0 not waterfront, convert to factor
+
+-   Condition is a categorical variable describing a rating from X to X the higher meaning better condition, convert to factor
+
+-   View is a categorical variable describing a rating from X to X the higher meaning the best better view, convert to factor
+
+## Visualization and Analysis
+
+Objectives - Discover relationships
+
+-   Distributions
+
+-   Densities
+
+-   Find outliers
+
+Is the price normally distributed?
+
+```{r}
+plot1 <- ggplot(df, aes(y=price)) +
+  geom_boxplot()
+
+plot2 <- ggplot(df, aes(x=price)) +
+  geom_density()
+
+grid.arrange(plot1, plot2, ncol = 2, nrow = 1)
+```
+
+Price is not normally distributed so it makes sense to log transform the variable
+
+```{r}
+df$price.log <- log(df$price)
+```
+
+Ensure that the number of bed and bath room are entered correctly
+
+```{r}
+plot1 <- ggplot(df, aes(x=sqft_living, y=bedrooms)) +
+  geom_point(size=2) +
+  labs(
+    title = "Sq. Feet vs. Num Bedrooms",
+    x = "Sq. Feet",
+    y = "Num Bedrooms")
+
+plot2 <- ggplot(df, aes(x=sqft_living, y=bathrooms)) +
+  geom_point(size=2) +
+  labs(
+    title = "Sq. Feet vs. Num Bathrooms",
+    x = "Sq. Feet",
+    y = "Num Bathrooms")
+
+grid.arrange(plot1, plot2, ncol = 2, nrow = 1)
+```
+
+It does not seems reasonable to have 33 bedrooms with the sq feet so that must be an error. A house with no bathrooms will not be considered valid.
+
+```{r}
+df <-filter(df, df$bedrooms<33 & df$bedrooms!=0 & df$bathrooms>=0.75)
+```
+
+Is there a relationship with view and waterfront?
+
+```{r}
+mytab<-table(df$waterfront, df$view)
+mytab
+```
+
+```{r}
+prop.table(mytab, 1)
+```
+
+As the quality of the view increases the proportion of the waterfront properties increase.
+
+Is there a relationship with view and condition?
+
+```{r}
+mytab<-table(df$waterfront, df$condition)
+mytab
+```
+
+```{r}
+prop.table(mytab, 1)
+```
+
+Left skewed distribution for both type of properties.
+
+Can we identify key differences between in the waterfront versus non-waterfront properties?
+
+```{r}
+# categorical columns
+df$waterfront <- as.factor(df$waterfront)
+col_names <- colnames(df)
+col_names <- col_names[-7]
+```
+
+```{r}
+for (i in col_names){
+    plot<-ggplot(df, aes(x=df[[i]], color=df$waterfront))+
+      geom_density()+
+      labs(x="waterfront", y=i, title=paste0("Density of ", i, " by Waterfront"))
+    print(plot)
+}
+```
+
+```{r}
+for (i in col_names){
+    plot<-ggplot(df, aes(x=waterfront, y=df[[i]]))+
+      geom_boxplot()+
+      labs(x="waterfront", y=i, title=paste0("Dist. waterfront by ", i))
+    print(plot)
+}
+```
+
+There is a distinct separation of classes for waterfront based on price. Can we model the relationship to learn more?
+
+```{r}
+#fit logistic regression model
+df$waterfront <- as.numeric(as.character(df$waterfront)) # ensure between 0 and 1
+model <- glm(waterfront ~ price.log, data=df, family=binomial)
+print(summary(model))
+
+#define new data frame that contains predictor variable
+newdata <- data.frame(price.log=seq(min(df$price.log), max(df$price.log),len=500))
+
+#use fitted model to predict values of vs
+newdata$waterfront = predict(model, newdata, type="response")
+
+#plot logistic regression curve
+plot(waterfront ~ price.log, data=df, col="steelblue", main='Waterfront Probability')
+lines(waterfront ~ price.log, newdata, lwd=1)
+```
+
+The model shows a positive relationship between the probability of waterfront being 1 and the increase in price
+
+## Preliminary Modeling
+
+Objective: First cut modeling using all regression methods to find feasible models
+
+```{r}
+df$view <- as.factor(df$view)
+```
+
+```{r}
+sample<-sample.int(nrow(df), floor(.80*nrow(df)), replace = F)
+train<-df[sample, ]
+test<-df[-sample, ]
+```
+
+```{r}
+allreg2 <- regsubsets(waterfront ~., data=train, nbest=1)
+summary(allreg2)
+
+coef(allreg2, which.max(summary(allreg2)$adjr2))
+coef(allreg2, which.min(summary(allreg2)$cp))
+coef(allreg2, which.min(summary(allreg2)$bic))
+```
+
+## Modeling
+
+Objective: Create primary model of interest
+
+```{r}
+result<-glm(waterfront~price+bathrooms+view+grade+yr_built+yr_renovated+sqft_living15+sqft_lot15+sqft_basement, family="binomial", data=train)
+summary(result)
+```
+
+## Test and Evaluation
+
+Objectives: Evaluate the significance of predictors and reduce the model as needed
+
+```{r}
+reduced<-glm(waterfront~price+bathrooms+grade+yr_renovated, family="binomial", data=train)
+#reduced<-glm(waterfront~price+bathrooms+grade+yr_built+yr_renovated+sqft_living15+sqft_lot15+sqft_basement, family="binomial", data=train)
+summary(reduced)
+```
+
+```{r}
+deltaG2<-abs(result$deviance-reduced$deviance)
+deltaG2
+```
+
+```{r}
+1-pchisq(deltaG2,5)
+```
+
+## Validation
+
+Objective
+
+-   Generate predictions
+
+-   Create ROC plot
+
+-   Evaluate performance via AUC
+
+-   Evaluate confusion matrix results
+
+```{r}
+preds<-predict(reduced,newdata=test, type="response")
+rates<-prediction(preds, test$waterfront)
+roc_result<-performance(rates,measure="tpr", x.measure="fpr")
+```
+
+```{r}
+plot(roc_result, main="ROC Curve for Waterfront (Reduced View Only)", colorize=TRUE)
+lines(x = c(0,1), y = c(0,1), col="red")
+```
+
+```{r}
+auc<-performance(rates, measure = "auc")
+auc@y.values
+```
+
+```{r}
+table(test$waterfront, preds>0.8)
+```
+
+```{r}
+FPR <- round(0/(4289+0), 4)
+paste0('The FPR is: ', FPR)
+FNR <- round(29/(29+1),4)
+paste0('The TPR is: ', FNR)
+err <- round((29+1)/(4289+0+29+1),4)
+paste0('The Error Rate is: ', err)
+```
+
+```{r}
+res <- round(preds, 4)
+#res
+```
+
+```{r}
+plot(res, main='Predicted Probs')
+```
+
+```{r}
+table_mat <- table(test$waterfront, preds>0.5)
+table_mat
+```
+
+```{r}
+FPR <- round(3/(4286+3), 4)
+paste0('The FPR is: ', FPR)
+FNR <- round(28/(28+2),4)
+paste0('The TPR is: ', FNR)
+err <- round((28+2)/(4286+3+28+2),4)
+paste0('The Error Rate is: ', err)
+acc <- round((4286+3)/(4286+3+28+2),4)
+paste0('The Accuracy is: ', acc)
+```
+
+```{r}
+test<-data.frame(test,preds)
+ggplot(test,aes(x=preds))+
+geom_density()+
+labs(title="Density Plot of Predicted Probs")
+```
+
+```{r}
+precision <- function(matrix) {
+	# True positive
+    tp <- matrix[2, 2]
+	# false positive
+    fp <- matrix[1, 2]
+    return (tp / (tp + fp))
+}
+
+recall <- function(matrix) {
+# true positive
+    tp <- matrix[2, 2]# false positive
+    fn <- matrix[2, 1]
+    return (tp / (tp + fn))
+}
+
+prec <- precision(table_mat)
+paste0("Precision: ", round(prec, 4))
+rec <- recall(table_mat)
+paste0("Recall: ", round(rec, 4))
+```
+
+```{r}
+f1 <- 2 * ((prec * rec) / (prec + rec))
+f1
+```
+
+-   Precision: Precise as possible with prediction
+
+-   Recall: Catch many data points labeled as true as possible even though the precision is low
+
+## Predictions
+
+Objective: Create new sample and obtain prediction log odds, odds, and probability
+
+```{r}
+#newdata<-data.frame()
+```
+
+```{r}
+##log odds
+#predict(reduced,newdata)
+```
+
+```{r}
+##odds
+#odds<-exp(predict(reduced,newdata))
+#odds
+```
+
+```{r}
+##convert odds to probability
+#prob<-odds/(1+odds)
+#prob
+```
